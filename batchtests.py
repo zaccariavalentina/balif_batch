@@ -1,10 +1,14 @@
-
+from datetime import datetime
 import itertools
+from joblib import Parallel, delayed
 import numpy as np 
 import os
 import random
+from tqdm import tqdm
+
 
 from sklearn.metrics import average_precision_score
+
 
 from iforest import BAD_IForest
 import odds_datasets
@@ -15,13 +19,18 @@ if not os.path.exists(save_dir):
 
 def run_sim(X, y, batch_size, strategy, seed=0, contamination_factor=0.1, query_multiple=False): 
 
-    save_path = f"{save_dir}/bs_{batch_size}_{strategy}_seed_{seed}_avp.txt"
+    # set save file name
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = f"{save_dir}/bs_{batch_size}_{strategy}_seed_{seed}_{current_time}avp.txt"
 
+    # set seeds
     np.random.seed(seed)
     random.seed(seed) 
 
+    # fit the unsupervised model
     model = BAD_IForest().fit(X)
     
+    # get and save unsupervised average precision
     scores0 = model.decision_function(X)
     avp_0 = average_precision_score(y, scores0)
     with open(save_path, "a") as f:
@@ -31,14 +40,12 @@ def run_sim(X, y, batch_size, strategy, seed=0, contamination_factor=0.1, query_
     queriable = np.ones(X.shape[0], dtype=bool)
 
     for _ in range(iterations): 
-
         if query_multiple: 
             queriable = None        # set queriable to None so get_batch_queries knows to return all samples
         
         batch_idxs = model.get_batch_queries(X, batch_size, strategy=strategy, queriable=queriable, contamination_factor=contamination_factor)
         queriable[batch_idxs] = False
         model.update(X[batch_idxs,:], y[batch_idxs])
-    
         scores = model.decision_function(X)
         avp = average_precision_score(y, scores)
         with open(save_path, "a") as f:
@@ -47,18 +54,25 @@ def run_sim(X, y, batch_size, strategy, seed=0, contamination_factor=0.1, query_
     
 
 def main(): 
-    # seeds = [0, 1, 2, 3, 4]
-    seeds = [0]
-    datasets = ['wine'] #, 'pima', 'cardio', 'annthyroid']
-    batch_sizes = [3] #[1, 2, 5, 10]
+    seeds = [0, 1] #, 1, 2] # 3, 4]
+    datasets = ['wine', 'pima', 'cardio', 'annthyroid']
+    batch_sizes = [1, 2, 5, 10 ]
     strategies = ['wc', 'avg']
     
     configs = list(itertools.product(seeds, datasets, batch_sizes, strategies))
 
-    for seed, dataset, batch_size, strategy in configs:
-        data, labels = odds_datasets.load(dataset)
-        contamination_factor = np.sum(labels) / len(labels)
-        run_sim(data, labels, batch_size, strategy, seed=seed, query_multiple=False, contamination_factor=contamination_factor)
+    # for seed, dataset, batch_size, strategy in configs:
+    #     data, labels = odds_datasets.load(dataset)
+    #     contamination_factor = np.sum(labels) / len(labels)
+    #     run_sim(data, labels, batch_size, strategy, seed=seed, query_multiple=False, contamination_factor=contamination_factor)
+
+    Parallel(n_jobs=-1)(delayed(run_sim)(odds_datasets.load(dataset)[0], 
+                                         odds_datasets.load(dataset)[1], 
+                                         batch_size, 
+                                         strategy, 
+                                         seed=seed, 
+                                         query_multiple=False) 
+                                         for seed, dataset, batch_size, strategy in tqdm(configs))
 
 if __name__ == "__main__":
     main()
