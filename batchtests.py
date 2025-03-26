@@ -13,7 +13,7 @@ save_dir = "batch_results/"
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
 
-def run_sim(X, y, batch_size, strategy, seed=0): 
+def run_sim(X, y, batch_size, strategy, seed=0, contamination_factor=0.1, query_multiple=False): 
 
     save_path = f"{save_dir}/bs_{batch_size}_{strategy}_seed_{seed}_avp.txt"
 
@@ -31,8 +31,11 @@ def run_sim(X, y, batch_size, strategy, seed=0):
     queriable = np.ones(X.shape[0], dtype=bool)
 
     for _ in range(iterations): 
-        # TODO: implement the queriable mask
-        batch_idxs = model.get_batch_queries(X, batch_size, strategy=strategy)
+
+        if query_multiple: 
+            queriable = None        # set queriable to None so get_batch_queries knows to return all samples
+        
+        batch_idxs = model.get_batch_queries(X, batch_size, strategy=strategy, queriable=queriable, contamination_factor=contamination_factor)
         queriable[batch_idxs] = False
         model.update(X[batch_idxs,:], y[batch_idxs])
     
@@ -48,13 +51,14 @@ def main():
     seeds = [0]
     datasets = ['wine'] #, 'pima', 'cardio', 'annthyroid']
     batch_sizes = [3] #[1, 2, 5, 10]
-    strategies = ['wc']
+    strategies = ['wc', 'avg']
     
     configs = list(itertools.product(seeds, datasets, batch_sizes, strategies))
 
     for seed, dataset, batch_size, strategy in configs:
         data, labels = odds_datasets.load(dataset)
-        run_sim(data, labels, batch_size, strategy, seed=seed)
+        contamination_factor = np.sum(labels) / len(labels)
+        run_sim(data, labels, batch_size, strategy, seed=seed, query_multiple=False, contamination_factor=contamination_factor)
 
 if __name__ == "__main__":
     main()

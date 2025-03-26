@@ -99,10 +99,11 @@ class BayesianDetector(BaseDetector):
         else:
             raise ValueError(f"Unknown shape for alphas_global and betas_global: {alphas_global.shape}")
 
-    def get_batch_queries(self, X: Float[np.ndarray, "samples features"], batch_size: int = 1, strategy:str = 'wc') -> Float:
+    def get_batch_queries(self, X: Float[np.ndarray, "samples features"], batch_size: int = 1, strategy:str = 'wc', queriable:np.ndarray = None, contamination_factor:float=None ) -> Float:
         """
         Return indices of samples to query in batch. 
         """
+        queriable_copy = copy.deepcopy(queriable)
         def merge_superposition(model_superpos1, model_superpos2): 
             alphas1, betas1 = model_superpos1.beliefs.a, model_superpos1.beliefs.b
             alphas2, betas2 = model_superpos2.beliefs.a, model_superpos2.beliefs.b
@@ -121,8 +122,20 @@ class BayesianDetector(BaseDetector):
             if strategy == 'wc': 
                 interest = interest.min(axis=-1)
             elif strategy == 'avg':
-                raise NotImplementedError
-            query_idx = jnp.argmax(interest)
+                if i == 0: 
+                    weights = np.ones_like(interest)
+                else:
+                    weights = np.concatenate([weights*contamination_factor, weights*(1-contamination_factor)], axis=-1)
+                interest = jnp.sum(interest * weights, axis=-1) / jnp.sum(weights, axis=-1)
+            else:
+                raise ValueError(f"Unknown strategy: {strategy}")
+            
+            if queriable_copy is not None: 
+                query_idx = jnp.where(queriable_copy, interest, -np.inf).argmax()
+                queriable_copy[query_idx] = False
+            else:
+                query_idx = jnp.argmax(interest)
+
             queries_idx.append(query_idx)
 
             model_superpos1 = copy.deepcopy(model_superpos)
