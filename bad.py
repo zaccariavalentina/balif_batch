@@ -73,7 +73,7 @@ class BayesianDetector(BaseDetector):
 
     def acquisition_value(self, X: Float[np.ndarray, "samples features"]) -> Float: 
         samples_regions = jnp.asarray(self.estimators_apply(X))                                 # shape (samples, estimators)
-        alphas_global, betas_global = self.beliefs.aggregate_distribution(samples_regions)     # shape (samples,) or (samples, 2**k) when batch_querying
+        alphas_global, betas_global = self.beliefs.aggregate_as_distribution(samples_regions)     # shape (samples,) or (samples, 2**k) when batch_querying
 
         # check the number of dimensions of alphas_global and betas_globals
         # if different from 1 (i.e., 2) iterate over the second dimension
@@ -234,4 +234,15 @@ class EnsembleBeliefs(BetaDistr):
         gathered_a, gathered_b = dist.a, dist.b     # shape (samples, estimators) or (samples, estimators, 2**k)
         global_a = jnp.sum(gathered_a, axis=1)
         global_b = jnp.sum(gathered_b, axis=1)      # sum over estimators
+        return global_a, global_b
+
+    @eqx.filter_jit
+    def aggregate_as_distribution(self, samples_regions: Int[jax.Array, "samples estimators"]) -> Shaped[Float, "samples 2**k"]:
+        dist = self.gather(samples_regions)
+        gathered_a, gathered_b = dist.a, dist.b     # shape (samples, estimators) or (samples, estimators, 2**k)
+
+        global_mean = jnp.mean(gathered_a / (gathered_a + gathered_b), axis=1)      # the global mean is the mean of estimators, shape (samples, ) or (samples, 2**k)
+        global_sample_size = jnp.sum(gathered_a + gathered_b, axis=1)               # the global sample size is the sum of the sample sizes of estimators, shape (samples, ) or (samples, 2**k)
+        global_a = global_mean * global_sample_size
+        global_b = global_sample_size - global_a
         return global_a, global_b
