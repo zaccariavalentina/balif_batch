@@ -3,11 +3,12 @@ from typing import Literal, Optional, NamedTuple
 from jaxtyping import Float, Int, Shaped
 
 import numpy as np
+import copy
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from jax.scipy.stats import beta
+from jax.scipy.stats import beta as betaJSP
 import equinox as eqx
 
 from pyod.models.base import BaseDetector
@@ -70,6 +71,68 @@ class BayesianDetector(BaseDetector):
         db = jnp.asarray(confidence * (y == 0)).flatten()
         self.beliefs = self.beliefs.update(regions, da, db)
 
+    def acquisition_value(self, X: Float[np.ndarray, "samples features"]) -> Float: 
+        samples_regions = jnp.asarray(self.estimators_apply(X))                                 # shape (samples, estimators)
+        alphas_global, betas_global = self.beliefs.aggregate_distribution(samples_regions)     # shape (samples,) or (samples, 2**k) when batch_querying
+
+        # check the number of dimensions of alphas_global and betas_globals
+        # if different from 1 (i.e., 2) iterate over the second dimension
+        if alphas_global.ndim == 1: 
+            modes = jnp.empty_like(alphas_global)
+            for i in range(len(alphas_global)):
+                mode_sample = BetaDistr.mode(alphas_global[i], betas_global[i])
+                modes = modes.at[i].set(mode_sample)
+            log_margin = betaJSP.logpdf(modes, alphas_global, betas_global) - betaJSP.logpdf(jnp.full_like(modes, 0.5), alphas_global, betas_global)
+            return jnp.exp(-log_margin)
+        elif alphas_global.ndim == 2:
+            interests = jnp.empty_like(alphas_global)       # shape (samples, 2**k)
+            for j in range(alphas_global.shape[1]): 
+                modes = jnp.empty(alphas_global.shape[0])
+                for i in range(alphas_global.shape[0]):
+                    a_i_j_global = alphas_global[i, j]
+                    b_i_j_global = betas_global[i, j]
+                    mode_sample = BetaDistr.mode(a_i_j_global, b_i_j_global)
+                    modes = modes.at[i].set(mode_sample)
+                log_margin = betaJSP.logpdf(modes, alphas_global[:, j], betas_global[:, j]) - betaJSP.logpdf(jnp.full_like(modes, 0.5), alphas_global[:, j], betas_global[:, j])
+                interests = interests.at[:, j].set(jnp.exp(-log_margin))
+            return interests 
+        else:
+            raise ValueError(f"Unknown shape for alphas_global and betas_global: {alphas_global.shape}")
+
+    def get_batch_queries(self, X: Float[np.ndarray, "samples features"], batch_size: int = 1, strategy:str = 'wc') -> Float:
+        """
+        Return indices of samples to query in batch. 
+        """
+        def merge_superposition(model_superpos1, model_superpos2): 
+            alphas1, betas1 = model_superpos1.beliefs.a, model_superpos1.beliefs.b
+            alphas2, betas2 = model_superpos2.beliefs.a, model_superpos2.beliefs.b
+            new_alphas = jnp.concatenate([alphas1, alphas2], axis=-1)
+            new_betas = jnp.concatenate([betas1, betas2], axis=-1)
+            model_superpos1.beliefs = EnsembleBeliefs(a=new_alphas, b=new_betas)
+            return model_superpos1
+        
+        queries_idx = []
+        model_superpos = copy.deepcopy(self)
+        new_alphas,new_betas = model_superpos.beliefs.a[..., jnp.newaxis], model_superpos.beliefs.b[..., jnp.newaxis]
+        model_superpos.beliefs = EnsembleBeliefs(a=new_alphas, b=new_betas)
+
+        for i in range(batch_size): 
+            interest = model_superpos.acquisition_value(X)
+            if strategy == 'wc': 
+                interest = interest.min(axis=-1)
+            elif strategy == 'avg':
+                raise NotImplementedError
+            query_idx = jnp.argmax(interest)
+            queries_idx.append(query_idx)
+
+            model_superpos1 = copy.deepcopy(model_superpos)
+            model_superpos1.update(X[query_idx,:].reshape(1,-1), 1)
+            model_superpos2 = copy.deepcopy(model_superpos)
+            model_superpos2.update(X[query_idx,:].reshape(1,-1), 0)
+            model_superpos = merge_superposition(model_superpos1, model_superpos2)
+        
+        return queries_idx
+
 
 class BetaDistr(eqx.Module):
     a: Float[jax.Array, "..."]
@@ -77,6 +140,11 @@ class BetaDistr(eqx.Module):
 
     def mean(self):
         return self.a / (self.a + self.b)
+    
+    @staticmethod
+    def mode(a, b):
+        return jax.lax.select(jnp.minimum(a, b) > 1, (a -1)/(a+b-2), jax.lax.select(a>b, 1.0, 0.0))
+    
 
 
 class EnsembleBeliefs(BetaDistr):
@@ -144,3 +212,13 @@ class EnsembleBeliefs(BetaDistr):
             return np.exp(np.mean(np.log(beliefs.mean()), axis=-1))
         else:
             raise ValueError(f"Unknown aggregation method: {method}")
+
+    @eqx.filter_jit
+    def aggregate_distribution(
+        self, samples_regions: Int[jax.Array, "samples estimators"]
+    ) -> Shaped[Float, "samples"]:
+        dist = self.gather(samples_regions)
+        gathered_a, gathered_b = dist.a, dist.b     # shape (samples, estimators) or (samples, estimators, 2**k)
+        global_a = jnp.sum(gathered_a, axis=1)
+        global_b = jnp.sum(gathered_b, axis=1)      # sum over estimators
+        return global_a, global_b
