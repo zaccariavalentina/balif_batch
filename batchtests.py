@@ -17,11 +17,11 @@ save_dir = "batch_results/"
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
 
-def run_sim(X, y, batch_size, strategy, seed=0, contamination_factor=0.1, query_multiple=False): 
+def run_sim(X, y, batch_size, strategy, seed=0, contamination_factor=0.1, query_multiple=False, dataset_name=None): 
 
     # set save file name
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_path = f"{save_dir}/bs_{batch_size}_{strategy}_seed_{seed}_{current_time}avp.txt"
+    save_path = f"{save_dir}/{dataset_name}_bs_{batch_size}_{strategy}_seed_{seed}_{current_time}_avp.txt"
 
     # set seeds
     np.random.seed(seed)
@@ -54,10 +54,11 @@ def run_sim(X, y, batch_size, strategy, seed=0, contamination_factor=0.1, query_
     
 
 def main(): 
-    seeds = [0, 1] #, 1, 2] # 3, 4]
+    seeds = [0, 1] # 2, 3, 4]
     datasets = ['wine', 'pima', 'cardio', 'annthyroid']
     batch_sizes = [1, 2, 5, 10 ]
     strategies = ['wc', 'avg']
+
     
     configs = list(itertools.product(seeds, datasets, batch_sizes, strategies))
 
@@ -71,7 +72,9 @@ def main():
                                          batch_size, 
                                          strategy, 
                                          seed=seed, 
-                                         query_multiple=False) 
+                                         query_multiple=False, 
+                                         contamination_factor = np.sum(odds_datasets.load(dataset)[1]) / len(odds_datasets.load(dataset)[1]),
+                                         dataset_name=dataset)
                                          for seed, dataset, batch_size, strategy in tqdm(configs))
 
 if __name__ == "__main__":
